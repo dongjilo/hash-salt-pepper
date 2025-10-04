@@ -1,0 +1,188 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>Register</title>
+    <script src="https://cdn.jsdelivr.net/npm/@tailwindcss/browser@4"></script>
+
+</head>
+
+<body class="bg-gray-100 flex items-center justify-center h-screen">
+    <div class="bg-white p-8 rounded shadow-md w-full max-w-md">
+        <h1 class="text-2xl mb-6">Register</h1>
+        <form method="post" action="/register" id="registerForm">
+            <div class="mb-4">
+                <label for="username" class="block mb-1">Username</label>
+                <input type="text" id="username" name="username" class="w-full p-2 border rounded" required>
+            </div>
+            <div class="mb-4">
+                <label for="password" class="block mb-1">Password</label>
+                <input type="password" id="password" name="password" class="w-full p-2 border rounded" required
+                    autocomplete="new-password">
+            </div>
+            <div class="mb-4">
+                <label for="confirm" class="block mb-1">Confirm Password</label>
+                <input type="password" id="confirm" name="confirm" class="w-full p-2 border rounded" required
+                    autocomplete="new-password">
+                <span id="matchIndicator" class="text-sm block mt-2" style="display:none"></span>
+            </div>
+
+            <!-- Password rules checklist -->
+            <ul id="pwRules" class="mb-2 text-sm" style="display:none">
+                <li id="lengthRule">❌ At least 12 characters</li>
+                <li id="uppercaseRule">❌ At least one uppercase letter</li>
+                <li id="lowercaseRule">❌ At least one lowercase letter</li>
+                <li id="digitRule">❌ At least one digit</li>
+                <li id="specialRule">❌ At least one special symbol</li>
+            </ul>
+
+            <!-- Password strength bar -->
+            <div class="mt-2" id="strengthSection" style="display:none">
+                <div id="strengthBar" class="w-full h-2 bg-gray-300 rounded"></div>
+                <span id="strengthText" class="text-gray-500">Strength: </span>
+            </div>
+            <button id="registerBtn" type="submit"
+                class="bg-blue-500 text-white px-4 py-2 rounded hover:bg-blue-600 w-full" disabled>Register</button>
+        </form>
+        {% if error %}
+        <!-- Only show error if it's NOT the password rules message -->
+        {% if error != "Password must be at least 12 characters and include uppercase, lowercase, digit, and symbol." %}
+        <p class="mt-4 text-red-500">{{ error }}</p>
+        {% endif %}
+        {% endif %}
+        <p class="mt-4"><a href="/login" class="text-blue-500 hover:underline">Already have an account? Login</a></p>
+    </div>
+
+    <script>
+        // Elements
+        const password = document.getElementById('password');
+        const confirm = document.getElementById('confirm');
+        const matchIndicator = document.getElementById('matchIndicator');
+        const pwRules = {
+            length: document.getElementById('lengthRule'),
+            uppercase: document.getElementById('uppercaseRule'),
+            lowercase: document.getElementById('lowercaseRule'),
+            digit: document.getElementById('digitRule'),
+            special: document.getElementById('specialRule')
+        };
+        const pwRulesList = document.getElementById('pwRules');
+        const strengthBar = document.getElementById('strengthBar');
+        const strengthText = document.getElementById('strengthText');
+        const strengthSection = document.getElementById('strengthSection');
+        const registerBtn = document.getElementById('registerBtn');
+        const registerForm = document.getElementById('registerForm');
+
+        let allRulesMet = false;
+        let passwordsMatch = false;
+
+        function checkPasswordStrength(pw) {
+            let score = 0;
+            // Rules
+            if (pw.length >= 12) {
+                score++; pwRules.length.textContent = "✅ At least 12 characters"; pwRules.length.className = "text-green-600";
+            } else {
+                pwRules.length.textContent = "❌ At least 12 characters"; pwRules.length.className = "text-red-600";
+            }
+            if (/[A-Z]/.test(pw)) {
+                score++; pwRules.uppercase.textContent = "✅ At least one uppercase letter"; pwRules.uppercase.className = "text-green-600";
+            } else {
+                pwRules.uppercase.textContent = "❌ At least one uppercase letter"; pwRules.uppercase.className = "text-red-600";
+            }
+            if (/[a-z]/.test(pw)) {
+                score++; pwRules.lowercase.textContent = "✅ At least one lowercase letter"; pwRules.lowercase.className = "text-green-600";
+            } else {
+                pwRules.lowercase.textContent = "❌ At least one lowercase letter"; pwRules.lowercase.className = "text-red-600";
+            }
+            if (/\d/.test(pw)) {
+                score++; pwRules.digit.textContent = "✅ At least one digit"; pwRules.digit.className = "text-green-600";
+            } else {
+                pwRules.digit.textContent = "❌ At least one digit"; pwRules.digit.className = "text-red-600";
+            }
+            if (/[^A-Za-z0-9]/.test(pw)) {
+                score++; pwRules.special.textContent = "✅ At least one special symbol"; pwRules.special.className = "text-green-600";
+            } else {
+                pwRules.special.textContent = "❌ At least one special symbol"; pwRules.special.className = "text-red-600";
+            }
+
+            // Strength meter
+            if (score <= 2) {
+                strengthBar.className = "w-full h-2 bg-red-500 rounded";
+                strengthText.textContent = "Strength: Weak";
+                strengthText.className = "text-red-600";
+            } else if (score == 3 || score == 4) {
+                strengthBar.className = "w-full h-2 bg-yellow-500 rounded";
+                strengthText.textContent = "Strength: Medium";
+                strengthText.className = "text-yellow-600";
+            } else if (score == 5) {
+                strengthBar.className = "w-full h-2 bg-green-500 rounded";
+                strengthText.textContent = "Strength: Strong";
+                strengthText.className = "text-green-600";
+            }
+
+            allRulesMet = (score === 5);
+        }
+
+        function checkMatch() {
+            if (password.value && confirm.value) {
+                matchIndicator.style.display = "block";
+                if (password.value === confirm.value) {
+                    matchIndicator.textContent = "✅ Passwords match";
+                    matchIndicator.className = "text-green-600";
+                    passwordsMatch = true;
+                } else {
+                    matchIndicator.textContent = "❌ Passwords do not match";
+                    matchIndicator.className = "text-red-600";
+                    passwordsMatch = false;
+                }
+            } else {
+                matchIndicator.textContent = "";
+                matchIndicator.style.display = "none";
+                passwordsMatch = false;
+            }
+        }
+
+        function showValidation() {
+            // Show checklist and meter only if user started typing password
+            if (password.value.length > 0) {
+                pwRulesList.style.display = "block";
+                strengthSection.style.display = "block";
+            } else {
+                pwRulesList.style.display = "none";
+                strengthSection.style.display = "none";
+                matchIndicator.style.display = "none";
+            }
+        }
+
+        function updateRegisterButton() {
+            // Enable register button only if all rules met and passwords match
+            registerBtn.disabled = !(allRulesMet && passwordsMatch);
+        }
+
+        password.addEventListener('input', () => {
+            showValidation();
+            checkPasswordStrength(password.value);
+            checkMatch();
+            updateRegisterButton();
+        });
+        confirm.addEventListener('input', () => {
+            checkMatch();
+            updateRegisterButton();
+        });
+
+        // Prevent form submission if rules not met
+        registerForm.addEventListener('submit', function (e) {
+            if (!allRulesMet || !passwordsMatch) {
+                e.preventDefault();
+            }
+        });
+
+        // Initial state
+        showValidation();
+        checkPasswordStrength('');
+        checkMatch();
+        updateRegisterButton();
+    </script>
+</body>
+
+</html>
