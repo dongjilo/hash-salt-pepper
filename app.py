@@ -1,4 +1,5 @@
 import hashlib
+import os
 import re
 import secrets
 import sqlite3
@@ -9,51 +10,135 @@ from fastapi.responses import HTMLResponse, RedirectResponse
 from fastapi.templating import Jinja2Templates
 from itsdangerous import BadSignature, URLSafeTimedSerializer
 
-# Secret values for pepper and session signing
-PEPPER = "pastil-bukojuice-isaw"
-SESSION_SECRET = "definitely-hinding-hindi-isang-sikreto"
+# ----- config -----
 
-# Session serializer for secure cookie signing
+PEPPER = os.getenv("PEPPER", "pastil-bukojuice-isaw")
+SESSION_SECRET = os.getenv("SESSION_SECRET", "definitely-hinding-hindi-isang-sikreto")
+NODE_ENV = os.getenv("NODE_ENV", "development")
+SECURE_COOKIES = os.getenv("SECURE_COOKIES", "false").lower() in ("2", "true", "yes")
+ENABLE_HSTS = NODE_ENV == "production"
+
 serializer = URLSafeTimedSerializer(SESSION_SECRET)
-# Jinja2 templates directory
 templates = Jinja2Templates(directory="templates")
 
-# Helper to get a database connection
 
-
+# ----- DB helpers -----
 def get_db():
     conn = sqlite3.connect("users.db")
     conn.row_factory = sqlite3.Row
     return conn
 
 
-# Lifespan event: creates users table on app startup
-
-
 @asynccontextmanager
 async def lifespan(app: FastAPI):
     conn = get_db()
-    conn.execute("""
-        CREATE TABLE IF NOT EXISTS users (
-            id INTEGER PRIMARY KEY AUTOINCREMENT,
-            username TEXT UNIQUE,
-            password_hash TEXT NOT NULL,
-            salt TEXT NOT NULL
-        )
-    """)
+    conn.execute(
+        """CREATE TABLE IF NOT EXISTS users (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               username TEXT UNIQUE,
+               password_hash TEXT NOT NULL,
+               salt TEXT NOT NULL
+           )"""
+    )
     conn.commit()
     conn.close()
     yield
-    # No shutdown tasks required
 
 
-# Create FastAPI app with lifespan handler
 app = FastAPI(lifespan=lifespan)
 
-# Validate password complexity according to rules
+
+# ----- security headers middleware  -----
+@app.middleware("http")
+async def add_security_headers(request: Request, call_next):
+    resp = await call_next(request)
+    csp = (
+        "default-src 'self'; "
+        "script-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "style-src 'self' 'unsafe-inline' https://cdn.jsdelivr.net; "
+        "img-src 'self' data:; "
+        "connect-src 'self'; "
+        "frame-ancestors 'none';"
+    )
+    resp.headers.setdefault("Content-Security-Policy", csp)
+    resp.headers.setdefault("X-Frame-Options", "DENY")
+    resp.headers.setdefault("X-Content-Type-Options", "nosniff")
+    resp.headers.setdefault("Referrer-Policy", "strict-origin-when-cross-origin")
+    resp.headers.setdefault(
+        "Permissions-Policy",
+        "camera=(), microphone=(), geolocation=(), interest-cohort=()",
+    )
+    resp.headers.setdefault("X-Permitted-Cross-Domain-Policies", "none")
+    if ENABLE_HSTS:
+        resp.headers.setdefault(
+            "Strict-Transport-Security", "max-age=63072000; includeSubDomains; preload"
+        )
+    return resp
 
 
-def validate_password(password):
+# ----- auth helpers -----
+def hash_password_sha256(
+    password: str, salt: str, pepper: str, iterations: int = 100_000
+) -> str:
+    value = (password + salt + pepper).encode("utf-8")
+    h = hashlib.sha256(value).digest()
+    for _ in range(iterations - 1):
+        h = hashlib.sha256(h).digest()
+    return h.hex()
+
+
+def create_session_cookie(username: str) -> str:
+    return serializer.dumps({"username": username})
+
+
+def get_username_from_cookie(request: Request):
+    cookie = request.cookies.get("session")
+    if not cookie:
+        return None
+    try:
+        data = serializer.loads(cookie, max_age=3600 * 24)
+        return data.get("username")
+    except BadSignature:
+        return None
+
+
+# ----- username sanitization -----
+def sanitize_username_raw(raw: str, max_len: int = 30) -> str:
+    if not raw:
+        return ""
+    s = raw.strip()
+    s = re.sub(r"\s+", "_", s)
+    s = re.sub(r"[^A-Za-z0-9_]", "", s)
+    return s[:max_len]
+
+
+# ----- routes -----
+@app.get("/", response_class=HTMLResponse)
+def root(request: Request):
+    username = get_username_from_cookie(request)
+    return RedirectResponse("/dashboard") if username else RedirectResponse("/login")
+
+
+@app.get("/dashboard", response_class=HTMLResponse)
+def dashboard(request: Request):
+    username = get_username_from_cookie(request)
+    if not username:
+        return RedirectResponse("/login")
+    resp = templates.TemplateResponse(
+        "dashboard.html", {"request": request, "username": username}
+    )
+    resp.headers["Cache-Control"] = "no-store, no-cache, must-revalidate, max-age=0"
+    resp.headers["Pragma"] = "no-cache"
+    resp.headers["Expires"] = "0"
+    return resp
+
+
+@app.get("/register", response_class=HTMLResponse)
+def register_get(request: Request):
+    return templates.TemplateResponse("register.html", {"request": request})
+
+
+def validate_password(password: str) -> bool:
     if len(password) < 12:
         return False
     if not re.search(r"[A-Z]", password):
@@ -67,62 +152,6 @@ def validate_password(password):
     return True
 
 
-# Hash password using SHA-256, salt, pepper, and many iterations
-
-
-def hash_password_sha256(password, salt, pepper, iterations=100_000):
-    value = (password + salt + pepper).encode("utf-8")
-    hash = hashlib.sha256(value).digest()
-    for _ in range(iterations - 1):
-        hash = hashlib.sha256(hash).digest()
-    return hash.hex()
-
-
-# Create a signed session cookie with username
-
-
-def create_session_cookie(username):
-    return serializer.dumps({"username": username})
-
-
-# Retrieve username from session cookie (returns None if invalid/expired)
-
-
-def get_username_from_cookie(request: Request):
-    cookie = request.cookies.get("session")
-    if not cookie:
-        return None
-    try:
-        data = serializer.loads(cookie, max_age=3600 * 24)  # 24 hour session
-        return data["username"]
-    except BadSignature:
-        return None
-
-
-# Home/dashboard: only accessible when logged in
-
-
-@app.get("/", response_class=HTMLResponse)
-def home(request: Request):
-    username = get_username_from_cookie(request)
-    if username:
-        return templates.TemplateResponse(
-            "dashboard.html", {"request": request, "username": username}
-        )
-    return RedirectResponse("/login")
-
-
-# Registration page (GET)
-
-
-@app.get("/register", response_class=HTMLResponse)
-def register_get(request: Request):
-    return templates.TemplateResponse("register.html", {"request": request})
-
-
-# Registration logic (POST): validates, hashes, and stores user
-
-
 @app.post("/register", response_class=HTMLResponse)
 def register_post(
     request: Request,
@@ -130,49 +159,73 @@ def register_post(
     password: str = Form(...),
     confirm: str = Form(...),
 ):
-    error = None
-    # Enforce password rules
     if not validate_password(password):
-        error = "Password must be at least 12 characters and include uppercase, lowercase, digit, and symbol."
-    elif password != confirm:
-        error = "Passwords do not match."
-    else:
-        conn = get_db()
-        cur = conn.cursor()
-        # Check if username already exists
-        cur.execute("SELECT * FROM users WHERE username = ?", (username,))
-        if cur.fetchone():
-            error = "Username already exists."
-        else:
-            # Generate random salt for user
-            salt = secrets.token_hex(16)
-            # Hash password + salt + pepper
-            password_hash = hash_password_sha256(password, salt, PEPPER)
-            # Insert new user into DB
-            cur.execute(
-                "INSERT INTO users (username, password_hash, salt) VALUES (?, ?, ?)",
-                (username, password_hash, salt),
-            )
-            conn.commit()
-            conn.close()
-            # Redirect to login after successful registration
-            return RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
+        err = "Password must be at least 12 characters and include uppercase, lowercase, digit, and symbol."
+        return templates.TemplateResponse(
+            "register.html", {"request": request, "error": err}
+        )
+    if password != confirm:
+        return templates.TemplateResponse(
+            "register.html", {"request": request, "error": "Passwords do not match."}
+        )
+
+    clean = sanitize_username_raw(username)
+    if not re.match(r"^[A-Za-z0-9_]{3,30}$", clean):
+        return templates.TemplateResponse(
+            "register.html",
+            {
+                "request": request,
+                "error": "Username must be 3-30 chars, alphanumeric or underscore.",
+            },
+        )
+
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM users WHERE username = ?", (clean,))
+    if cur.fetchone():
         conn.close()
-    # Render registration form with error message if validation fails
+        return templates.TemplateResponse(
+            "register.html",
+            {"request": request, "error": f"Username '{clean}' is already taken."},
+        )
+
+    salt = secrets.token_hex(16)
+    pw_hash = hash_password_sha256(password, salt, PEPPER)
+    cur.execute(
+        "INSERT INTO users (username, password_hash, salt) VALUES (?, ?, ?)",
+        (clean, pw_hash, salt),
+    )
+    conn.commit()
+    conn.close()
+
+    info_msg = None
+    if clean != username:
+        info_msg = f"Account created as: {clean}"
     return templates.TemplateResponse(
-        "register.html", {"request": request, "error": error}
+        "login.html", {"request": request, "info": info_msg}
     )
 
 
-# Login page (GET)
+@app.get("/api/username-available")
+def username_available(q: str):
+    clean = sanitize_username_raw(q)
+    if not re.match(r"^[A-Za-z0-9_]{3,30}$", clean):
+        return {"available": False, "clean": clean, "reason": "invalid"}
+    conn = get_db()
+    cur = conn.cursor()
+    cur.execute("SELECT 1 FROM users WHERE username = ?", (clean,))
+    taken = bool(cur.fetchone())
+    conn.close()
+    return {
+        "available": not taken,
+        "clean": clean,
+        "reason": "taken" if taken else "ok",
+    }
 
 
 @app.get("/login", response_class=HTMLResponse)
 def login_get(request: Request):
     return templates.TemplateResponse("login.html", {"request": request})
-
-
-# Login logic (POST): verifies credentials and sets session
 
 
 @app.post("/login", response_class=HTMLResponse)
@@ -182,41 +235,40 @@ def login_post(
     username: str = Form(...),
     password: str = Form(...),
 ):
-    error = None
     conn = get_db()
     cur = conn.cursor()
-    # Fetch user by username
     cur.execute("SELECT * FROM users WHERE username = ?", (username,))
     user = cur.fetchone()
     if not user:
-        error = "Invalid username or password."
-    else:
-        salt = user["salt"]
-        stored_hash = user["password_hash"]
-        # Hash input password with stored salt and pepper
-        password_hash = hash_password_sha256(password, salt, PEPPER)
-        if password_hash != stored_hash:
-            error = "Invalid username or password."
-        else:
-            # Successful login: set signed session cookie and redirect to dashboard
-            session_cookie = create_session_cookie(username)
-            response = RedirectResponse("/", status_code=status.HTTP_303_SEE_OTHER)
-            response.set_cookie(
-                "session", session_cookie, httponly=True, max_age=3600 * 24
-            )
-            return response
-    conn.close()
-    # Render login form with error message if login fails
-    return templates.TemplateResponse(
-        "login.html", {"request": request, "error": error}
+        conn.close()
+        return templates.TemplateResponse(
+            "login.html", {"request": request, "error": "Invalid username or password."}
+        )
+
+    salt = user["salt"]
+    stored_hash = user["password_hash"]
+    if hash_password_sha256(password, salt, PEPPER) != stored_hash:
+        conn.close()
+        return templates.TemplateResponse(
+            "login.html", {"request": request, "error": "Invalid username or password."}
+        )
+
+    session_cookie = create_session_cookie(username)
+    resp = RedirectResponse("/", status_code=status.HTTP_303_SEE_OTHER)
+    resp.set_cookie(
+        "session",
+        session_cookie,
+        httponly=True,
+        secure=SECURE_COOKIES,
+        samesite="lax",
+        max_age=3600 * 24,
     )
-
-
-# Logout: removes session cookie and redirects to login
+    conn.close()
+    return resp
 
 
 @app.get("/logout")
 def logout(response: Response):
-    response = RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
-    response.delete_cookie("session")
-    return response
+    resp = RedirectResponse("/login", status_code=status.HTTP_303_SEE_OTHER)
+    resp.delete_cookie("session")
+    return resp
